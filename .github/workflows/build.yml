@@ -20,7 +20,7 @@ jobs:
       - name: Build
         run: |
           xcodebuild \
-            -workspace alt-tab-macos.xcworkspace \
+            -project alt-tab-macos.xcodeproj \
             -scheme Release \
             -derivedDataPath DerivedData \
             MACOSX_DEPLOYMENT_TARGET=10.13 \
