@@ -2,7 +2,9 @@ import Cocoa
 
 class Windows {
     static var list = [Window]()
-    private static var aerospaceWorkspaceWindowIds: Set<CGWindowID>? = nil
+    // MCMonad hides off-workspace windows by parking them at the bottom-right corner of their screen.
+    // nil means MCMonad is not running; non-nil is the set of parked (hidden) window IDs.
+    private static var mcmonadParkedWindowIds: Set<CGWindowID>? = nil
     private(set) static var byWindowId = [CGWindowID: Window]()
     /// wids that received a focus signal (an 808, a visible-Space join, an in-app raise) while still
     /// untracked, with the time it happened. `.discoveryLanded` consumes it to place the window at the MRU
@@ -36,42 +38,50 @@ class Windows {
     private static var shouldRestoreDefaultSelectionOnSearchClear = false
 
     static func shouldDisplay(_ window: Window) -> Bool {
-        if let ids = aerospaceWorkspaceWindowIds, let cgId = window.cgWindowId {
-            guard ids.contains(cgId) else { return false }
+        if let parked = mcmonadParkedWindowIds, let cgId = window.cgWindowId {
+            guard !parked.contains(cgId) else { return false }
         }
         return window.shouldShowTheUser && Search.matches(window, query: (SwitcherSession.current?.searchQuery ?? ""))
     }
 
-    // cached PATH from launchd, which may include paths not visible to GUI apps by default
-    private static var launchdPath: String? = {
-        let p = Process()
-        p.executableURL = URL(fileURLWithPath: "/bin/launchctl")
-        p.arguments = ["getenv", "PATH"]
-        let pipe = Pipe()
-        p.standardOutput = pipe
-        try? p.run()
-        p.waitUntilExit()
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        return String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
-    }()
+    private static func refreshMcmonadFilter() {
+        // MCMonad parks off-workspace windows at the bottom-right corner of their screen using AX frame moves.
+        // The park position is (screen.visibleFrame.maxX - 1, screen.visibleFrame.maxY - 1) in Quartz coords
+        // (top-left origin), matching what CGWindowListCopyWindowInfo reports. A parked window's visible
+        // intersection with any screen is ≤2px wide.
+        let primaryHeight = NSScreen.screens.first?.frame.height ?? 0
+        let screenFrames: [CGRect] = NSScreen.screens.map { screen in
+            let f = screen.visibleFrame
+            let flippedY = primaryHeight - f.origin.y - f.height
+            return CGRect(x: f.origin.x, y: flippedY, width: f.width, height: f.height)
+        }
 
-    private static func refreshAerospaceFilter() {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-        process.arguments = ["aerospace", "list-windows", "--workspace", "focused", "--format", "%{window-id}"]
-        if let path = launchdPath {
-            process.environment = ["PATH": path]
+        guard let windowList = CGWindowListCopyWindowInfo(
+            [.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID
+        ) as? [[CFString: Any]] else {
+            mcmonadParkedWindowIds = nil
+            return
         }
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        do {
-            try process.run()
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
-            guard let output = String(data: data, encoding: .utf8) else { aerospaceWorkspaceWindowIds = nil; return }
-            aerospaceWorkspaceWindowIds = Set(output.split(separator: "\n").compactMap { CGWindowID($0.trimmingCharacters(in: .whitespaces)) })
-        } catch {
-            aerospaceWorkspaceWindowIds = nil
+
+        var parked = Set<CGWindowID>()
+        for info in windowList {
+            guard let wid = info[kCGWindowNumber] as? CGWindowID,
+                  let boundsRef = info[kCGWindowBounds],
+                  let bounds = CGRect(dictionaryRepresentation: boundsRef as! CFDictionary) else { continue }
+            if isMcmonadParked(bounds, screens: screenFrames) {
+                parked.insert(wid)
+            }
         }
+        mcmonadParkedWindowIds = parked
+    }
+
+    private static func isMcmonadParked(_ frame: CGRect, screens: [CGRect]) -> Bool {
+        let atRightEdge = screens.contains { frame.origin.x >= $0.maxX - 2 }
+        guard atRightEdge else { return false }
+        let widestExposure = screens.map { $0.intersection(frame) }
+                                    .map { $0.isNull ? CGFloat(0) : $0.width }
+                                    .max() ?? 0
+        return widestExposure <= 2
     }
 
     static func updateSearchQuery(_ query: String) {
@@ -134,7 +144,7 @@ class Windows {
         // computed-property access rebuilds the underlying array via N×`CachedUserDefaults.macroPref`
         // calls. Snapshot them once and pass into the per-window helper.
         let filters = WindowFilters.snapshot()
-        refreshAerospaceFilter()
+        refreshMcmonadFilter()
         // Tab grouping (incl. fullscreen siblings) and active→inactive state mirroring are reconciled
         // reactively on WindowServer events (TabGroup.reconcile), so the model is already grouped here —
         // doing it in this synchronous show path would reorder tiles mid-render (UI jump).
