@@ -2,6 +2,9 @@ import Cocoa
 
 class Windows {
     static var list = [Window]()
+    // MCMonad hides off-workspace windows by parking them at the bottom-right corner of their screen.
+    // nil means MCMonad is not running; non-nil is the set of parked (hidden) window IDs.
+    private static var mcmonadParkedWindowIds: Set<CGWindowID>? = nil
     private(set) static var byWindowId = [CGWindowID: Window]()
     /// wids that received a focus signal (an 808, a visible-Space join, an in-app raise) while still
     /// untracked, with the time it happened. `.discoveryLanded` consumes it to place the window at the MRU
@@ -35,7 +38,25 @@ class Windows {
     private static var shouldRestoreDefaultSelectionOnSearchClear = false
 
     static func shouldDisplay(_ window: Window) -> Bool {
-        window.shouldShowTheUser && Search.matches(window, query: (SwitcherSession.current?.searchQuery ?? ""))
+        if let parked = mcmonadParkedWindowIds, let cgId = window.cgWindowId {
+            guard !parked.contains(cgId) else { return false }
+        }
+        return window.shouldShowTheUser && Search.matches(window, query: (SwitcherSession.current?.searchQuery ?? ""))
+    }
+
+    private static func refreshMcmonadFilter() {
+        // MCMonad writes hidden window IDs to workspace-windows.json on every layout update.
+        // Reading this file is reliable regardless of whether windows have been repositioned yet
+        // (unlike the old position-based park detection which broke with fullscreen toggle layouts).
+        let filePath = NSHomeDirectory() + "/.config/mcmonad/workspace-windows.json"
+        guard FileManager.default.fileExists(atPath: filePath),
+              let data = FileManager.default.contents(atPath: filePath),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let ids = obj["hiddenWindowIds"] as? [Int] else {
+            mcmonadParkedWindowIds = nil
+            return
+        }
+        mcmonadParkedWindowIds = Set(ids.map { CGWindowID($0) })
     }
 
     static func updateSearchQuery(_ query: String) {
@@ -98,6 +119,7 @@ class Windows {
         // computed-property access rebuilds the underlying array via N×`CachedUserDefaults.macroPref`
         // calls. Snapshot them once and pass into the per-window helper.
         let filters = WindowFilters.snapshot()
+        refreshMcmonadFilter()
         // Tab grouping (incl. fullscreen siblings) and active→inactive state mirroring are reconciled
         // reactively on WindowServer events (TabGroup.reconcile), so the model is already grouped here —
         // doing it in this synchronous show path would reorder tiles mid-render (UI jump).
