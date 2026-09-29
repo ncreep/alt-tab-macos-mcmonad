@@ -378,16 +378,6 @@ class Window {
             }
             WindowThumbnails.previewSelectedIfNeeded()
         } else {
-            // When MCMonad is running, delegate focus to it via its public socket.
-            // MCMonad's bounce-suppression fights direct AX focus; going through
-            // MCMonad arms focusIntent for the target and avoids the bounce.
-            if let cgId = cgWindowId,
-               Windows.sendMcmonadFocusRequest(windowId: cgId, pid: application.pid) {
-                DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(50)) {
-                    WindowThumbnails.previewSelectedIfNeeded()
-                }
-                return
-            }
             // macOS bug: when switching to a System Preferences window in another space, it switches to that space,
             // but quickly switches back to another window in that space
             // You can reproduce this buggy behaviour by clicking on the dock icon, proving it's an OS bug
