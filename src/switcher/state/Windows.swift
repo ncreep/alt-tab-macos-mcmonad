@@ -84,6 +84,40 @@ class Windows {
         return widestExposure <= 2
     }
 
+    // Send a focus-window request to MCMonad's public socket so it focuses the
+    // window through its own path (workspace switch + unpark + focusIntent armed),
+    // bypassing MCMonad's bounce-suppression. Returns true if MCMonad is running
+    // and the command was sent; false means AltTab should use its own AX focus.
+    static func sendMcmonadFocusRequest(windowId: CGWindowID, pid: pid_t) -> Bool {
+        guard mcmonadParkedWindowIds != nil else { return false } // MCMonad not running
+        let sockPath = NSHomeDirectory() + "/.config/mcmonad/pub.sock"
+        guard FileManager.default.fileExists(atPath: sockPath) else { return false }
+
+        let fd = Darwin.socket(AF_UNIX, SOCK_STREAM, 0)
+        guard fd >= 0 else { return false }
+        defer { Darwin.close(fd) }
+
+        var addr = sockaddr_un()
+        addr.sun_family = sa_family_t(AF_UNIX)
+        addr.sun_len = UInt8(MemoryLayout<sockaddr_un>.size)
+        withUnsafeMutablePointer(to: &addr.sun_path) { ptr in
+            ptr.withMemoryRebound(to: CChar.self, capacity: 104) { buf in
+                _ = strncpy(buf, sockPath, 103)
+            }
+        }
+
+        let connected = withUnsafePointer(to: &addr) { ptr in
+            ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockPtr in
+                Darwin.connect(fd, sockPtr, socklen_t(MemoryLayout<sockaddr_un>.size))
+            }
+        }
+        guard connected == 0 else { return false }
+
+        let json = "{\"cmd\":\"focus-window\",\"windowId\":\(windowId),\"pid\":\(pid)}\n"
+        _ = json.withCString { Darwin.write(fd, $0, strlen($0)) }
+        return true
+    }
+
     static func updateSearchQuery(_ query: String) {
         let previousTrimmedQuery = Search.normalizedQuery(SwitcherSession.current?.searchQuery ?? "")
         let newTrimmedQuery = Search.normalizedQuery(query)
