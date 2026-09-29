@@ -45,43 +45,18 @@ class Windows {
     }
 
     private static func refreshMcmonadFilter() {
-        // MCMonad parks off-workspace windows at the bottom-right corner of their screen using AX frame moves.
-        // The park position is (screen.visibleFrame.maxX - 1, screen.visibleFrame.maxY - 1) in Quartz coords
-        // (top-left origin), matching what CGWindowListCopyWindowInfo reports. A parked window's visible
-        // intersection with any screen is ≤2px wide.
-        let primaryHeight = NSScreen.screens.first?.frame.height ?? 0
-        let screenFrames: [CGRect] = NSScreen.screens.map { screen in
-            let f = screen.visibleFrame
-            let flippedY = primaryHeight - f.origin.y - f.height
-            return CGRect(x: f.origin.x, y: flippedY, width: f.width, height: f.height)
-        }
-
-        guard let windowList = CGWindowListCopyWindowInfo(
-            [.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID
-        ) as? [[CFString: Any]] else {
+        // MCMonad writes hidden window IDs to workspace-windows.json on every layout update.
+        // Reading this file is reliable regardless of whether windows have been repositioned yet
+        // (unlike the old position-based park detection which broke with fullscreen toggle layouts).
+        let filePath = NSHomeDirectory() + "/.config/mcmonad/workspace-windows.json"
+        guard FileManager.default.fileExists(atPath: filePath),
+              let data = FileManager.default.contents(atPath: filePath),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let ids = obj["hiddenWindowIds"] as? [Int] else {
             mcmonadParkedWindowIds = nil
             return
         }
-
-        var parked = Set<CGWindowID>()
-        for info in windowList {
-            guard let wid = info[kCGWindowNumber] as? CGWindowID,
-                  let boundsRef = info[kCGWindowBounds],
-                  let bounds = CGRect(dictionaryRepresentation: boundsRef as! CFDictionary) else { continue }
-            if isMcmonadParked(bounds, screens: screenFrames) {
-                parked.insert(wid)
-            }
-        }
-        mcmonadParkedWindowIds = parked
-    }
-
-    private static func isMcmonadParked(_ frame: CGRect, screens: [CGRect]) -> Bool {
-        let atRightEdge = screens.contains { frame.origin.x >= $0.maxX - 2 }
-        guard atRightEdge else { return false }
-        let widestExposure = screens.map { $0.intersection(frame) }
-                                    .map { $0.isNull ? CGFloat(0) : $0.width }
-                                    .max() ?? 0
-        return widestExposure <= 2
+        mcmonadParkedWindowIds = Set(ids.map { CGWindowID($0) })
     }
 
     // Send a focus-window request to MCMonad's public socket so it focuses the
