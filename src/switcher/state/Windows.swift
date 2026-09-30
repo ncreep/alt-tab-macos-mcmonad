@@ -46,17 +46,18 @@ class Windows {
     }
 
     private static func refreshMcmonadFilter() {
-        // MCMonad writes the current workspace's exact window-ID list to
-        // workspace-windows.json on every layout update.
-        let filePath = NSHomeDirectory() + "/.config/mcmonad/workspace-windows.json"
-        guard FileManager.default.fileExists(atPath: filePath),
-              let data = FileManager.default.contents(atPath: filePath),
-              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let ids = obj["currentWorkspaceWindowIds"] as? [Int] else {
-            mcmonadCurrentWorkspaceWindowIds = nil
-            return
+        // Ask MCMonad, live, for the exact window IDs on the workspace shown
+        // on the screen AltTab is about to appear on. A refused/missing
+        // connection means MCMonad isn't running, so the filter is disabled
+        // (nil) and every window shows. Any other failure (timeout,
+        // malformed response) is transient: keep the last successfully
+        // fetched list rather than falling back to nil, so a glitch never
+        // widens the switcher to every workspace's windows.
+        switch MCMonadQuery.currentWorkspaceWindowIds(forScreen: NSScreen.preferred) {
+        case .notRunning: mcmonadCurrentWorkspaceWindowIds = nil
+        case .transientFailure: break
+        case .success(let ids): mcmonadCurrentWorkspaceWindowIds = ids
         }
-        mcmonadCurrentWorkspaceWindowIds = Set(ids.map { CGWindowID($0) })
     }
 
     static func updateSearchQuery(_ query: String) {
