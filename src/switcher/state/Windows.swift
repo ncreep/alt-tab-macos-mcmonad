@@ -39,10 +39,16 @@ class Windows {
     private static var shouldRestoreDefaultSelectionOnSearchClear = false
 
     static func shouldDisplay(_ window: Window) -> Bool {
+        let matchesSearch = Search.matches(window, query: (SwitcherSession.current?.searchQuery ?? ""))
+        // While MCMonad is running, its allowlist is the sole authority on
+        // which windows show — bypassing shouldShowTheUser (space/screen/
+        // phantom heuristics) entirely, since a window MCMonad vouches for
+        // may look "phantom" by geometry alone (shrunk to a sliver, parked
+        // at a screen edge) while still being a perfectly real window.
         if let allowed = mcmonadCurrentWorkspaceWindowIds, let cgId = window.cgWindowId {
-            guard allowed.contains(cgId) else { return false }
+            return allowed.contains(cgId) && matchesSearch
         }
-        return window.shouldShowTheUser && Search.matches(window, query: (SwitcherSession.current?.searchQuery ?? ""))
+        return window.shouldShowTheUser && matchesSearch
     }
 
     private static func refreshMcmonadFilter() {
